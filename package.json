@@ -1,0 +1,19 @@
+{
+  "name": "particles-1",
+  "version": "1.0.0",
+  "main": "script.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite",
+    "build": "vite build",
+    "deploy": "npx gh-pages -d dist"
+  },
+  "author": "Sean Niesen",
+  "license": "ISC",
+  "dependencies": {
+    "ml5": "^1.0.1",
+    "p5": "^2.2.0",
+    "patch-package": "^8.0.1",
+    "vite": "^7.3.1"
+  }
+}
