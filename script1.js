@@ -126,6 +126,31 @@ const sketch = (p) => {
         return fract(sin(seed * 127.1 + u.time * 311.7) * 43758.5453);
       }
 
+      fn hash2(p: vec2f) -> f32 {
+        var q = vec2f(dot(p, vec2f(127.1, 311.7)), dot(p, vec2f(269.5, 183.3)));
+        return fract(sin(q.x + q.y) * 43758.5453);
+      }
+
+      fn smoothNoise(p: vec2f) -> f32 {
+        let i  = floor(p);
+        let f  = fract(p);
+        let u2 = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(hash2(i + vec2f(0.0, 0.0)), hash2(i + vec2f(1.0, 0.0)), u2.x),
+          mix(hash2(i + vec2f(0.0, 1.0)), hash2(i + vec2f(1.0, 1.0)), u2.x),
+          u2.y
+        );
+      }
+
+      fn noiseForce(pos: vec2f, t: f32) -> vec2f {
+        let scale = 0.002;
+        let speed = 0.3;
+        let p2    = pos * scale;
+        let n1    = smoothNoise(p2 + vec2f(t * speed, 0.0));
+        let n2    = smoothNoise(p2 + vec2f(0.0, t * speed) + vec2f(5.2, 1.3));
+        return (vec2f(n1, n2) - 0.5) * 2.0;
+      }
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
@@ -135,8 +160,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   if (p.life >= 0.0) {
     // ── alive: simulate ──
+    let noiseStr = select(300.0, 150.0, p.eye > 1.5); // eyes stronger, mouth gentler
+    let nf       = noiseForce(p.pos, u.time);
+    let force    = nf * noiseStr;
+    p.pad    = clamp(length(nf), 0.0, 1.0); // store noise magnitude for render shader
     p.vel.y += 80.0 * u.dt;
-    p.vel   *= pow(0.98, u.dt * 60.0);
+    p.vel   += force * u.dt;
+    p.vel   *= pow(0.995, u.dt * 60.0);
     p.pos   += p.vel * u.dt;
     p.life  -= u.dt;
 
@@ -165,11 +195,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           rand(seed) * 1.0471 + 1.0472,
           isMouthParticle
         );
-        let speed = select(
+        let baseSpeed = select(
           rand(seed + 1.0) * 150.0 + 50.0,
           rand(seed + 1.0) * 100.0 + 80.0,
           isMouthParticle
         );
+        let isFast  = (i % 10u) == 0u;
+        let speed   = select(baseSpeed, baseSpeed * 2.0, isFast);
         p.pos = select(
           emitPos + vec2f((rand(seed + 2.0) - 0.5) * 10.0,  (rand(seed + 3.0) - 0.5) * 10.0),
           emitPos + vec2f((rand(seed + 2.0) - 0.5) * 70.0,  (rand(seed + 3.0) - 0.5) * 30.0),
@@ -289,12 +321,39 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           out.pos     = vec4f(ndc.x, -ndc.y, 0.0, 1.0);
         
           let isMouth = p.eye > 1.5;
-            let col = select(
-              mix(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), t),  // eye: green→red
-              mix(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), t),  // mouth: blue→red
-              isMouth
-            );
-          out.col = vec4f(col * t, t);
+
+          // per-particle variation: a stable random value 0..1 based on index
+          let variation = fract(sin(f32(particleIdx) * 127.1 + 43.0) * 43758.5453);
+
+          // green base with slight hue shift toward cyan or yellow
+          let eyeBase = mix(
+            vec3f(0.0, 1.0, 0.0),                              // pure green
+            select(
+              vec3f(0.0, 1.0, 1.0),                            // green→teal
+              vec3f(1.0, 1.0, 0.0),                            // green→lime
+              variation > 0.5
+            ),
+            variation * 0.5                                     // max 50% shift
+          );
+
+          // blue base with slight hue shift toward cyan or violet
+          let mouthBase = mix(
+            vec3f(0.0, 0.0, 1.0),                              // pure blue
+            select(
+              vec3f(0.0, 0.3, 1.0),                            // blue→cyan
+              vec3f(0.3, 0.0, 1.0),                            // blue→violet
+              variation > 0.5
+            ),
+            variation * 0.5
+          );
+
+          let spawnCol = select(eyeBase, mouthBase, isMouth);
+          let col = mix(vec3f(1.0, 0.0, 0.0), spawnCol, t);   // fade to red as t→0
+
+          // mix in yellow based on noise magnitude stored in p.pad
+          let yellow = vec3f(1.0, 1.0, 0.0);
+          let finalCol = mix(col, yellow, p.pad * 0.6);
+          out.col = vec4f(finalCol * t, t);
           return out;
         }
 
@@ -463,6 +522,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         p.background(0, 20);
         p.image(video, vx, vy, vw, vh);
         dispatchGPU(performance.now());
+
+        // Instructions overlay
+        p.textSize(16);
+        p.textAlign(p.LEFT, p.TOP);
+        p.textStyle(p.BOLD);
+
+        // Draw black stroke/shadow by drawing text offset in multiple directions
+        p.fill(0, 0, 0, 220);
+        p.text('1. Click the 🔊 Sound button to start', 17, 17);
+        p.text('1. Click the 🔊 Sound button to start', 15, 17);
+        p.text('1. Click the 🔊 Sound button to start', 17, 15);
+        p.text('1. Click the 🔊 Sound button to start', 15, 15);
+        p.text('2. Open your mouth to release particles', 17, 41);
+        p.text('2. Open your mouth to release particles', 15, 41);
+        p.text('2. Open your mouth to release particles', 17, 39);
+        p.text('2. Open your mouth to release particles', 15, 39);
+
+        // Draw white text on top
+        p.fill(255, 255, 255, 220);
+        p.text('1. Click the 🔊 Sound button to start', 16, 16);
+        p.text('2. Open your mouth to release particles', 16, 40);
     };
 
     p.windowResized = () => {
